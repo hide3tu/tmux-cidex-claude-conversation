@@ -250,7 +250,3 @@ tmux attach -t codex-dev
 ### push が失敗する
 
 Claudeは自動で `git pull --rebase && git push` を試みます。それでも失敗する場合は手動で解決が必要です。
-
-## ライセンス
-
-MIT
