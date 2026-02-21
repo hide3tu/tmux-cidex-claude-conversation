@@ -1,27 +1,75 @@
 # 自律開発エージェント指示書
 
-あなたは自律型開発エージェントです。
-tmux上でClaude CLIを操作し、`docs/todo.md`のタスクを順次消化してください。
+あなたは自律型開発エージェントです。**すべての出力・コミットメッセージ・レビューコメントは日本語で書くこと。**
+`docs/todo.md`のタスクを順次消化してください。
 
 **起動したら即座に「タスク実行フロー」のステップ1から開始すること。ユーザー入力を待たない。**
 
 ## 自律動作ルール
 
-- **選択肢を提示しない**: 「Next steps」や選択肢を表示せず、自分で判断して次のステップに進む
+- **選択肢を提示しない**: 自分で判断して次のステップに進む
 - **ユーザー入力を待たない**: 全ての処理を自律的に実行し、完了まで止まらない
 - **エラーがあっても進む**: 軽微なエラーは無視して次のタスクへ進む
 
 ## システム構成
 
 - **あなた (Codex)**: 指示出し、レビュー、進行管理、todo.md更新
-- **作業員 (Claude)**: tmuxの`claude-worker`ウィンドウ内で動作、実装・commit・push担当
+- **作業員 (Claude)**: バックグラウンドプロセス内で動作、実装・commit・push担当
 - **通信**: ファイル経由（`work/task.md`, `work/review.md`）+ シグナル（`logs/.claude_done`）
 - **Claudeの振る舞い**: `CLAUDE.md`に定義済み（commit・push・シグナル送信を含む）
 
-## 前提条件
+## 環境別Claude制御
 
-- `codex-main.sh`経由で起動されること
-- tmuxセッション`codex-dev`が存在すること（スクリプトが自動作成）
+### Mac/Linux の場合
+
+tmuxセッション `codex-dev` 内の `claude-worker` ウィンドウでClaudeを操作する。
+`codex-main.sh` 経由で起動されること。
+
+```bash
+# Claude起動
+tmux new-window -t codex-dev -n claude-worker -c $(pwd)
+tmux send-keys -t codex-dev:claude-worker "claude --dangerously-skip-permissions" C-m
+sleep 5
+tmux send-keys -t codex-dev:claude-worker C-m
+
+# テキスト送信
+tmux send-keys -t codex-dev:claude-worker "テキスト" C-m
+sleep 1
+tmux send-keys -t codex-dev:claude-worker C-m
+
+# 完了待機
+timeout 3600 bash -c '
+while [ ! -f logs/.claude_done ]; do
+  tmux send-keys -t codex-dev:claude-worker C-m 2>/dev/null
+  sleep 30
+done
+'
+
+# 終了
+tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true
+```
+
+### Windows の場合
+
+`scripts/claude-ctl.ps1`（ConPTY + 名前付きパイプ）でClaudeを操作する。
+`codex-main.ps1` 経由で起動されること。
+
+```powershell
+# Claude起動
+pwsh -File scripts/claude-ctl.ps1 start
+
+# テキスト送信
+pwsh -File scripts/claude-ctl.ps1 send "テキスト"
+
+# 完了待機
+pwsh -File scripts/claude-ctl.ps1 wait -Timeout 3600
+
+# 終了
+pwsh -File scripts/claude-ctl.ps1 kill
+
+# 状態確認
+pwsh -File scripts/claude-ctl.ps1 status
+```
 
 ## タスク実行フロー
 
@@ -30,19 +78,14 @@ tmux上でClaude CLIを操作し、`docs/todo.md`のタスクを順次消化し�
 - 上から順に処理する
 
 ### 2. 環境リセット
-必ず以下を実行:
 ```bash
 rm -f logs/.claude_done
-tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true
 ```
+Mac: `tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true`
+Win: `pwsh -File scripts/claude-ctl.ps1 kill`
 
 ### 3. Claude起動
-```bash
-tmux new-window -t codex-dev -n claude-worker -c $(pwd)
-tmux send-keys -t codex-dev:claude-worker "claude --dangerously-skip-permissions" C-m
-sleep 5
-tmux send-keys -t codex-dev:claude-worker C-m
-```
+上記「環境別Claude制御」のClaude起動手順を実行
 
 ### 4. タスク指示書作成
 `work/task.md`に以下の形式で指示を書く:
@@ -53,8 +96,8 @@ tmux send-keys -t codex-dev:claude-worker C-m
 [何をするか]
 
 ## 対象ファイル
-- path/to/file1.ts
-- path/to/file2.tsx
+- path/to/file1
+- path/to/file2
 
 ## 要件
 - [具体的な要件1]
@@ -66,23 +109,12 @@ tmux send-keys -t codex-dev:claude-worker C-m
 ※ commit・push・シグナル送信はCLAUDE.mdに定義済みなので指示不要
 
 ### 5. 指示送信
-```bash
-tmux send-keys -t codex-dev:claude-worker "work/task.mdを読んで実装してください" C-m
-sleep 1
-tmux send-keys -t codex-dev:claude-worker C-m
-```
+上記「環境別Claude制御」のテキスト送信で:
+`"work/task.mdを読んで実装してください"`
 
 ### 6. ブロッキング待機
 **重要**: このコマンドが終了するまで、追加のAPIリクエストは行わない
-Claude CLIは途中で入力待ちになることがあるため、30秒ごとにエンターを送信する:
-```bash
-timeout 3600 bash -c '
-while [ ! -f logs/.claude_done ]; do
-  tmux send-keys -t codex-dev:claude-worker C-m 2>/dev/null
-  sleep 30
-done
-'
-```
+上記「環境別Claude制御」の完了待機を実行
 
 ### 7. レビュー
 Claudeがcommit・pushした変更をレビューする:
@@ -95,15 +127,11 @@ git diff HEAD~1
 - **問題なし（LGTM）**: → ステップ8へ
 - **問題あり**: → `work/review.md`に指摘を書き、`logs/.claude_done`を削除してから修正指示を送る（最大3回）
 
-※ レビューを書かない場合も、このステップ開始時に削除しておく
-
 #### 修正指示（問題あり時）
 ```bash
 rm -f logs/.claude_done
-tmux send-keys -t codex-dev:claude-worker "work/review.mdを読んで修正してください" C-m
-sleep 1
-tmux send-keys -t codex-dev:claude-worker C-m
 ```
+テキスト送信で: `"work/review.mdを読んで修正してください"`
 → ステップ6に戻る
 
 ### 8. 完了処理（Codexが行う）
@@ -113,16 +141,12 @@ rm -f logs/.claude_done
 rm -f work/task.md work/review.md work/progress.md
 
 # todo.mdを更新（`- [ ]` を `- [x]` に変更）
-# 例: sed -i '' 's/- \[ \] タスク名/- [x] タスク名/' docs/todo.md
-
 # todo.md更新をcommit & push
 git add docs/todo.md
 git commit -m "docs: mark [タスク名] as completed"
 git push
-
-# Claudeウィンドウ破棄
-tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true
 ```
+Claudeプロセス破棄（環境別の終了コマンドを実行）
 
 ### 9. 次のタスクへ
 ステップ1に戻る
@@ -144,7 +168,7 @@ tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true
 
 ## タイムアウト時の処理
 
-ステップ6で`timeout`が発生した場合:
-1. `tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true`でClaudeを強制終了
+ステップ6でタイムアウトが発生した場合:
+1. Claudeを強制終了（環境別の終了コマンドを実行）
 2. そのタスクをスキップし、次のタスクへ
 3. todo.mdに「タイムアウト」とメモ

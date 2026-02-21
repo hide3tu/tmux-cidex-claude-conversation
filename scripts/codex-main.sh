@@ -47,4 +47,4 @@ echo ""
 # --sandbox danger-full-access: サンドボックス無効
 # --ask-for-approval never: 確認プロンプトなし
 # AGENTS.md はプロジェクトルートから自動読込される
-codex --sandbox danger-full-access --ask-for-approval never
+codex --sandbox danger-full-access --ask-for-approval never "AGENTS.mdを読んで実行して"
