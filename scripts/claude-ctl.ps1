@@ -370,6 +370,10 @@ function Send-PipeCommand {
 # ============================================================
 
 function Start-Server {
+    # Log server output to file (since this runs in a hidden window)
+    $serverLog = Join-Path $script:ProjectRoot "logs\server.log"
+    Start-Transcript -Path $serverLog -Force | Out-Null
+
     Ensure-ConPtyLoaded
 
     $workDir = $script:ProjectRoot
@@ -524,6 +528,7 @@ function Start-Server {
         Remove-Item $script:PidFile -Force -ErrorAction SilentlyContinue
         Remove-Item $script:ServerPidFile -Force -ErrorAction SilentlyContinue
         Write-Host "Done."
+        try { Stop-Transcript | Out-Null } catch { }
     }
 }
 
@@ -539,7 +544,11 @@ function Invoke-Start {
     $logsDir = Join-Path $script:ProjectRoot "logs"
     New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 
-    # Launch server as background process
+    # Launch server as background process.
+    # IMPORTANT: Do NOT use -RedirectStandardOutput/-RedirectStandardError here.
+    # Redirecting stdin/stdout causes Claude CLI to detect non-interactive mode
+    # and fail with "Input must be provided through stdin or as a prompt argument".
+    # Server writes its own log to logs/server.log via Start-Transcript instead.
     $scriptPath = $PSCommandPath
     $proc = Start-Process -FilePath $script:PwshPath -ArgumentList "-NoProfile", "-File", $scriptPath, "server" `
         -WorkingDirectory $script:ProjectRoot `
@@ -565,6 +574,12 @@ function Invoke-Start {
         catch { }
     }
 
+    # Show server logs on failure for debugging
+    $serverLog = Join-Path $script:ProjectRoot "logs\server.log"
+    if (Test-Path $serverLog) {
+        Write-Host "--- server.log (last 30 lines) ---"
+        Get-Content $serverLog -Tail 30 | ForEach-Object { Write-Host $_ }
+    }
     Write-Error "Timeout: Claude did not start within 30 seconds."
 }
 

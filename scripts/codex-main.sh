@@ -36,15 +36,13 @@ fi
 
 echo "Codexをエージェントモードで起動します..."
 echo "  セッション: $SESSION_NAME"
-echo "  --sandbox danger-full-access: サンドボックス無効"
-echo "  --ask-for-approval never: 確認プロンプトなし"
+echo "  --dangerously-bypass-approvals-and-sandbox: 全制限解除"
 echo "  AGENTS.md は自動読込"
 echo ""
 echo "停止するには Ctrl+C を押してください"
 echo ""
 
 # Codexをエージェントモードで起動
-# --sandbox danger-full-access: サンドボックス無効
-# --ask-for-approval never: 確認プロンプトなし
+# --dangerously-bypass-approvals-and-sandbox: サンドボックス+承認を全バイパス
 # AGENTS.md はプロジェクトルートから自動読込される
-codex --sandbox danger-full-access --ask-for-approval never "AGENTS.mdを読んで実行して"
+codex --dangerously-bypass-approvals-and-sandbox "AGENTS.mdを読んで実行して"
