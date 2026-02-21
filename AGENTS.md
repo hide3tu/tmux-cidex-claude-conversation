@@ -51,24 +51,32 @@ tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true
 
 ### Windows の場合
 
-`scripts/claude-ctl.ps1`（ConPTY + 名前付きパイプ）でClaudeを操作する。
+`scripts/worker-*.ps1` ラッパースクリプトでClaudeを操作する。
 `codex-main.ps1` 経由で起動されること。
+
+**重要**: `claude-ctl.ps1` を直接呼ばず、必ず以下のラッパーを使うこと。
 
 ```powershell
 # Claude起動
-pwsh -File scripts/claude-ctl.ps1 start
+pwsh -File scripts/worker-setup.ps1
 
 # テキスト送信
-pwsh -File scripts/claude-ctl.ps1 send "テキスト"
+pwsh -File scripts/worker-send.ps1 "テキスト"
 
 # 完了待機
-pwsh -File scripts/claude-ctl.ps1 wait -Timeout 3600
+pwsh -File scripts/worker-standby.ps1 -Timeout 3600
 
 # 終了
-pwsh -File scripts/claude-ctl.ps1 kill
+pwsh -File scripts/worker-done.ps1
 
 # 状態確認
-pwsh -File scripts/claude-ctl.ps1 status
+pwsh -File scripts/worker-check.ps1
+
+# シグナルクリア
+pwsh -File scripts/worker-reset.ps1
+
+# ログ確認
+pwsh -File scripts/worker-log.ps1
 ```
 
 ## タスク実行フロー
@@ -82,7 +90,7 @@ pwsh -File scripts/claude-ctl.ps1 status
 rm -f logs/.claude_done
 ```
 Mac: `tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true`
-Win: `pwsh -File scripts/claude-ctl.ps1 kill`
+Win: `pwsh -File scripts/worker-reset.ps1` → `pwsh -File scripts/worker-done.ps1`
 
 ### 3. Claude起動
 上記「環境別Claude制御」のClaude起動手順を実行
@@ -146,7 +154,9 @@ git add docs/todo.md
 git commit -m "docs: mark [タスク名] as completed"
 git push
 ```
-Claudeプロセス破棄（環境別の終了コマンドを実行）
+Claudeプロセス破棄:
+Mac: `tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true`
+Win: `pwsh -File scripts/worker-done.ps1`
 
 ### 9. 次のタスクへ
 ステップ1に戻る
@@ -169,6 +179,6 @@ Claudeプロセス破棄（環境別の終了コマンドを実行）
 ## タイムアウト時の処理
 
 ステップ6でタイムアウトが発生した場合:
-1. Claudeを強制終了（環境別の終了コマンドを実行）
+1. Claudeを終了（Mac: `tmux kill-window ...` / Win: `pwsh -File scripts/worker-done.ps1`）
 2. そのタスクをスキップし、次のタスクへ
 3. todo.mdに「タイムアウト」とメモ

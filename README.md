@@ -269,7 +269,14 @@ pwsh -File scripts/codex-main.ps1
 ├── scripts/
 │   ├── codex-main.sh      # 起動スクリプト（Mac/Linux）
 │   ├── codex-main.ps1     # 起動スクリプト（Windows）
-│   └── claude-ctl.ps1     # Claude制御ツール（Windows, ConPTY + 名前付きパイプ）
+│   ├── claude-ctl.ps1     # Claude制御コア（Windows, ConPTY + 名前付きパイプ）
+│   ├── worker-setup.ps1   # Claude起動ラッパー
+│   ├── worker-send.ps1    # テキスト送信ラッパー
+│   ├── worker-standby.ps1 # 完了待機ラッパー
+│   ├── worker-done.ps1    # 終了ラッパー
+│   ├── worker-check.ps1   # 状態確認ラッパー
+│   ├── worker-reset.ps1   # シグナルクリアラッパー
+│   └── worker-log.ps1     # ログ表示ラッパー
 ├── docs/
 │   └── todo.md            # タスクリスト（要作成）
 ├── work/                  # 一時ファイル置き場（gitignore済み）
