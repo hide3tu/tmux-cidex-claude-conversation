@@ -50,6 +50,57 @@ Codex CLIをマネージャー、Claude CLIをワーカーとして連携させ�
 
 ## セットアップ
 
+### 0. 実行環境の事前準備（重要）
+
+自動開発を開始する前に、**各CLIのオンボーディングと認証を手動で完了**しておく必要があります。
+これを済ませていない環境ではスクリプトによる自動制御が失敗します。
+
+#### Claude CLI の初期設定
+
+初回起動時に以下のプロンプトが順番に表示されます。**すべて手動で完了させてください**:
+
+1. **テーマ選択** — 6つのテーマから選択
+2. **ログイン** — ブラウザでOAuth認証（自動化不可）
+3. **フォルダ信頼** — "Do you trust the files in this folder?" → Yesを選択
+4. **bypass-permissions警告** — `--dangerously-skip-permissions` 使用時の警告 → "Yes, I accept"を選択
+
+```bash
+# 対象プロジェクトのディレクトリで一度手動起動する
+cd your-project
+claude --dangerously-skip-permissions
+
+# 全プロンプトを手動で承認して、TUIが表示されたら /exit で終了
+
+# 設定が保存されたか確認
+cat ~/.claude/settings.json
+# → "skipDangerousModePermissionPrompt": true があること
+
+cat ~/.claude.json
+# → "hasCompletedOnboarding": true があること
+```
+
+> **注意**: `--dangerously-skip-permissions` の警告ダイアログは、手動で一度承認するまで毎回表示されます（[既知の仕様](https://github.com/anthropics/claude-code/issues/25503)）。
+
+#### Codex CLI の確認
+
+```bash
+# Codexが正常に動作するか確認
+codex --sandbox danger-full-access --ask-for-approval never "echo hello"
+```
+
+#### Windows 11 Pro / 企業管理環境での注意
+
+管理されたWindows環境（ドメイン参加、Intune管理等）では、グループポリシーにより以下が制限される場合があります:
+
+| 制約 | 影響 | 確認方法 |
+|------|------|----------|
+| PowerShell実行ポリシー | スクリプト実行がブロック | `Get-ExecutionPolicy -List` |
+| AppLocker / WDAC | 未署名プロセスの起動がブロック | 管理者に確認 |
+| ネットワークポリシー | API通信がファイアウォールでブロック | `curl https://api.anthropic.com` |
+| Codex組織ポリシー | `requirements.toml` で `danger-full-access` が禁止 | Codex起動時のエラーメッセージを確認 |
+
+これらの制約はコード側では回避できません。環境の管理者にポリシー緩和を依頼するか、制約の無い環境で実行してください。
+
 ### 1. このリポジトリをテンプレートとして使用
 
 ```bash
@@ -284,9 +335,14 @@ tmux attach -t codex-dev
 # Claude の状態を確認
 pwsh -File scripts/claude-ctl.ps1 status
 
+# ConPTYの出力ログを確認（何が表示されているか見える）
+pwsh -File scripts/claude-ctl.ps1 log
+
 # 手動でEnterを送信
 pwsh -File scripts/claude-ctl.ps1 enter
 ```
+
+`log` コマンドはConPTYのライブバッファ（最新8KB）と `logs/conpty.log` の末尾を表示します。Claudeが初期化プロンプトで止まっているのか、プロセス自体が死んでいるのかを確認できます。
 
 ### タイムアウトが発生する
 
