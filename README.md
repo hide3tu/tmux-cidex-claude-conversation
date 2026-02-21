@@ -17,19 +17,36 @@ Codex CLIをマネージャー、Claude CLIをワーカーとして連携させ�
                  │ - logs/.claude_done (完了シグナル)
                  ▼
 ┌─────────────────────────────────────────────────────────┐
-│  Claude (ワーカー) - tmux内で動作                        │
+│  Claude (ワーカー)                                       │
+│  - Linux/macOS: tmux内で動作                             │
+│  - Windows: ConPTYバックグラウンドプロセス内で動作         │
 │  - 実装作業                                             │
 │  - commit & push                                        │
 │  - 完了シグナル送信                                      │
 └─────────────────────────────────────────────────────────┘
 ```
 
+## 実行環境
+
+| | Mac / Linux | Windows |
+|---|---|---|
+| Claude制御 | tmux + send-keys（直接実行） | ConPTY + 名前付きパイプ (`claude-ctl.ps1`) |
+| 起動スクリプト | `bash scripts/codex-main.sh` | `pwsh -File scripts/codex-main.ps1` |
+| シグナル / タスク通信 | `logs/.claude_done`, `work/task.md` (共通) | 同左 |
+
 ## 前提条件
 
+### 共通
 - [Codex CLI](https://github.com/openai/codex) がインストール済み
 - [Claude CLI](https://github.com/anthropics/claude-code) がインストール済み
-- tmux がインストール済み
 - Git リポジトリとして初期化済み
+
+### Mac / Linux
+- tmux がインストール済み
+
+### Windows
+- Windows 10 1809以降（ConPTY対応）
+- PowerShell 7+（pwsh）— `PWSH_PATH` 環境変数でパスを指定可能
 
 ## セットアップ
 
@@ -153,14 +170,21 @@ Codexに具体的なタスクリストを生成させる:
 
 TODOが固まったら自動開発を開始:
 
+**Linux/macOS:**
 ```bash
 ./scripts/codex-main.sh
+```
+
+**Windows:**
+```powershell
+pwsh -File scripts/codex-main.ps1
 ```
 
 ## 使い方
 
 ### 起動
 
+**Linux/macOS:**
 ```bash
 ./scripts/codex-main.sh
 ```
@@ -170,24 +194,36 @@ TODOが固まったら自動開発を開始:
 2. Codexがエージェントモードで起動
 3. `AGENTS.md` の指示に従い自動でタスクを処理開始
 
+**Windows:**
+```powershell
+pwsh -File scripts/codex-main.ps1
+```
+
+これにより:
+1. Codexがエージェントモードで起動
+2. Claude CLIはConPTYバックグラウンドプロセスとして管理される
+3. `AGENTS.md` の指示に従い自動でタスクを処理開始
+
 ### 停止
 
-`Ctrl+C` で停止。Claudeのワーカーウィンドウは自動でクリーンアップされます。
+`Ctrl+C` で停止。Claudeのワーカープロセスは自動でクリーンアップされます。
 
 ## ファイル構成
 
 ```
 .
-├── AGENTS.md           # Codex（マネージャー）への指示書
-├── CLAUDE.md           # Claude（ワーカー）への指示書
-├── README.md           # このファイル
+├── AGENTS.md              # Codex（マネージャー）への指示書
+├── CLAUDE.md              # Claude（ワーカー）への指示書
+├── README.md              # このファイル
 ├── scripts/
-│   └── codex-main.sh   # 起動スクリプト
+│   ├── codex-main.sh      # 起動スクリプト（Mac/Linux）
+│   ├── codex-main.ps1     # 起動スクリプト（Windows）
+│   └── claude-ctl.ps1     # Claude制御ツール（Windows, ConPTY + 名前付きパイプ）
 ├── docs/
-│   └── todo.md         # タスクリスト（要作成）
-├── work/               # 一時ファイル置き場（gitignore済み）
+│   └── todo.md            # タスクリスト（要作成）
+├── work/                  # 一時ファイル置き場（gitignore済み）
 │   └── .gitkeep
-└── logs/               # シグナル・ログ用（gitignore済み）
+└── logs/                  # シグナル・ログ用（gitignore済み）
     └── .gitkeep
 ```
 
@@ -236,16 +272,28 @@ Codexが `work/task.md` に書く指示のフォーマット:
 
 30秒ごとにエンターキーが送信されますが、それでも応答がない場合:
 
+**Linux/macOS:**
 ```bash
 # 手動でClaudeウィンドウを確認
 tmux attach -t codex-dev
-
 # ウィンドウ切り替え: Ctrl+B, n
+```
+
+**Windows:**
+```powershell
+# Claude の状態を確認
+pwsh -File scripts/claude-ctl.ps1 status
+
+# 手動でEnterを送信
+pwsh -File scripts/claude-ctl.ps1 enter
 ```
 
 ### タイムアウトが発生する
 
-デフォルトのタイムアウトは60分。`AGENTS.md` の `timeout 3600` を調整してください。
+デフォルトのタイムアウトは60分。
+
+- Linux/macOS: `AGENTS.md` の `timeout 3600` を調整
+- Windows: `AGENTS.md` の `-Timeout 3600` を調整
 
 ### push が失敗する
 
