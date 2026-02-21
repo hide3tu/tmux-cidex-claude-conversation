@@ -16,25 +16,24 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $projectRoot
 
-$claudeCtl = Join-Path $PSScriptRoot "claude-ctl.ps1"
+$workerDone = Join-Path $PSScriptRoot "worker-done.ps1"
 
 # ディレクトリ準備
 New-Item -ItemType Directory -Path "logs", "work" -Force | Out-Null
 
 Write-Host "Codexをエージェントモードで起動します..."
-Write-Host "  --sandbox danger-full-access: サンドボックス無効"
-Write-Host "  --ask-for-approval never: 確認プロンプトなし"
+Write-Host "  --dangerously-bypass-approvals-and-sandbox: 全制限解除"
 Write-Host "  AGENTS.md は自動読込"
 Write-Host ""
 Write-Host "停止するには Ctrl+C を押してください"
 Write-Host ""
 
 try {
-    codex --sandbox danger-full-access --ask-for-approval never "AGENTS.mdを読んで実行して"
+    codex --dangerously-bypass-approvals-and-sandbox "AGENTS.mdを読んで実行して"
 }
 finally {
     Write-Host ""
     Write-Host "終了処理中..."
-    & $claudeCtl kill 2>$null
+    & $workerDone 2>$null
     Write-Host "完了"
 }
