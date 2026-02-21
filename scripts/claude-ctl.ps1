@@ -476,6 +476,7 @@ function Start-Server {
 
                 $line = $reader.ReadLine()
                 if ($null -eq $line) { continue }
+                $line = $line.Trim()
 
                 switch -Regex ($line) {
                     "^SEND:(.+)$" {
