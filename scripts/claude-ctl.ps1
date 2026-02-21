@@ -8,10 +8,11 @@
 #   pwsh -File scripts/claude-ctl.ps1 wait [-Timeout 3600] # Wait for .claude_done
 #   pwsh -File scripts/claude-ctl.ps1 kill                # Kill Claude process
 #   pwsh -File scripts/claude-ctl.ps1 status              # Check if running
+#   pwsh -File scripts/claude-ctl.ps1 log                 # Show ConPTY output log
 
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("start", "send", "enter", "wait", "kill", "status", "server")]
+    [ValidateSet("start", "send", "enter", "wait", "kill", "status", "log", "server")]
     [string]$Command,
 
     [Parameter(Position = 1)]
@@ -47,6 +48,7 @@ $script:PidFile = Join-Path $script:ProjectRoot "logs\.claude_pid"
 $script:ServerPidFile = Join-Path $script:ProjectRoot "logs\.claude_server_pid"
 $script:DoneFile = Join-Path $script:ProjectRoot "logs\.claude_done"
 $script:PipeName = "claude-ctl"
+$script:LogFile = Join-Path $script:ProjectRoot "logs\conpty.log"
 
 # ============================================================
 # ConPTY C# Helper (inline compiled)
@@ -284,6 +286,20 @@ public static class ConPtyHelper
         lock (_outputBuffer) { return _outputBuffer.ToString().Contains(text); }
     }
 
+    /// <summary>Clear the output buffer.</summary>
+    public static void ClearOutput()
+    {
+        if (_outputBuffer == null) return;
+        lock (_outputBuffer) { _outputBuffer.Clear(); }
+    }
+
+    /// <summary>Return the current output buffer content (last 8KB).</summary>
+    public static string GetOutput()
+    {
+        if (_outputBuffer == null) return "";
+        lock (_outputBuffer) { return _outputBuffer.ToString(); }
+    }
+
     /// <summary>Check if ConPTY session is still alive (output pipe open or process running).</summary>
     public static bool IsRunning()
     {
@@ -359,6 +375,12 @@ function Start-Server {
     $workDir = $script:ProjectRoot
     $claudeCmd = if ($env:CLAUDE_CMD) { $env:CLAUDE_CMD } else { "claude --dangerously-skip-permissions" }
 
+    # Enable ConPTY log by default (can be overridden by CONPTY_LOG env var)
+    if (-not $env:CONPTY_LOG) {
+        $env:CONPTY_LOG = $script:LogFile
+    }
+    Write-Host "ConPTY log: $($env:CONPTY_LOG)"
+
     Write-Host "Starting Claude in ConPTY..."
     $childPid = [ConPtyHelper]::Start($claudeCmd, $workDir)
     Write-Host "Claude PID: $childPid"
@@ -366,28 +388,61 @@ function Start-Server {
     # Save child PID
     $childPid | Out-File -FilePath $script:PidFile -Encoding ASCII -NoNewline
 
-    # Wait for Claude to initialize, checking output to detect bypass-permissions prompt
+    # Wait for Claude to initialize, handling prompts based on buffer content.
+    # Each prompt is identified by its text, and the correct key sequence is sent.
+    # After handling, the buffer is cleared so the next prompt can be detected.
     Write-Host "Waiting for Claude to initialize..."
     $initWait = 0
-    $promptHandled = $false
-    while ($initWait -lt 30 -and [ConPtyHelper]::IsRunning()) {
-        Start-Sleep -Seconds 1
-        $initWait++
-        if (-not $promptHandled -and [ConPtyHelper]::OutputContains("No, exit")) {
-            Write-Host "Bypass permissions prompt detected, accepting..."
-            [ConPtyHelper]::SendInput([char]0x1B + "[B")  # Arrow Down
-            Start-Sleep -Milliseconds 500
-            [ConPtyHelper]::SendEnter()
-            $promptHandled = $true
+    $promptsHandled = 0
+    while ($initWait -lt 60 -and [ConPtyHelper]::IsRunning()) {
+        Start-Sleep -Seconds 2
+        $initWait += 2
+        $buf = [ConPtyHelper]::GetOutput()
+
+        if ($buf.Length -gt 0) {
+            Write-Host "  [$initWait s] Buffer ($($buf.Length) chars): $($buf.Substring([Math]::Max(0, $buf.Length - 200)))" -ForegroundColor DarkGray
         }
-        if ([ConPtyHelper]::OutputContains("Claude Code")) {
-            # TUI is up (welcome screen or prompt visible)
-            if (-not $promptHandled) {
-                Write-Host "No bypass prompt (already accepted), Claude is ready."
-            }
-            # Give it a moment to fully render
+
+        # Check if TUI is ready (input prompt visible)
+        if ($buf -match "Claude Code" -or $buf -match "What can I help") {
+            Write-Host "Claude TUI is ready. (handled $promptsHandled prompt(s))"
             Start-Sleep -Seconds 2
             break
+        }
+
+        # Detect and handle known prompts by their content
+        $handled = $false
+
+        # Pattern: any selection prompt with "Yes" option (folder trust, ToS, etc.)
+        # These typically have "Yes" as default (top) selection, so Enter accepts.
+        if ($buf -match "trust" -or $buf -match "Trust" -or $buf -match "accept" -or $buf -match "Accept") {
+            $promptsHandled++
+            Write-Host "  Prompt #$promptsHandled detected (trust/accept). Sending Enter..."
+            [ConPtyHelper]::SendEnter()
+            $handled = $true
+        }
+        # Pattern: "No, exit" visible - the decline option.
+        # Need to determine if cursor is on Yes or No.
+        # If "Yes" has the selection marker (❯ or >) before it, just Enter.
+        # Otherwise send Arrow Up to go to Yes, then Enter.
+        elseif ($buf -match "No, exit") {
+            $promptsHandled++
+            if ($buf -match "❯.*Yes" -or $buf -match ">.*Yes") {
+                Write-Host "  Prompt #$promptsHandled detected (No,exit visible, Yes selected). Sending Enter..."
+                [ConPtyHelper]::SendEnter()
+            } else {
+                # Cursor might be on No. Try Arrow Up to reach Yes, then Enter.
+                Write-Host "  Prompt #$promptsHandled detected (No,exit visible, navigating to Yes). Sending Up+Enter..."
+                [ConPtyHelper]::SendInput([char]0x1B + "[A")  # Arrow Up
+                Start-Sleep -Milliseconds 300
+                [ConPtyHelper]::SendEnter()
+            }
+            $handled = $true
+        }
+
+        if ($handled) {
+            Start-Sleep -Seconds 3
+            [ConPtyHelper]::ClearOutput()
         }
     }
 
@@ -435,6 +490,12 @@ function Start-Server {
                     "^STATUS$" {
                         $running = [ConPtyHelper]::IsRunning()
                         $writer.WriteLine($(if ($running) { "RUNNING" } else { "STOPPED" }))
+                    }
+                    "^GETLOG$" {
+                        $buf = [ConPtyHelper]::GetOutput()
+                        # Replace newlines with escape sequence for pipe transport
+                        $escaped = $buf -replace "`r`n", "<<NL>>" -replace "`n", "<<NL>>" -replace "`r", "<<NL>>"
+                        $writer.WriteLine($escaped)
                     }
                     "^KILL$" {
                         [ConPtyHelper]::Kill()
@@ -592,6 +653,44 @@ function Invoke-Status {
     }
 }
 
+function Invoke-Log {
+    # Show ConPTY output buffer (live state from server) + log file tail
+    Write-Host "=== ConPTY Live Buffer (last 8KB) ==="
+    try {
+        $response = Send-PipeCommand "GETLOG"
+        if ($response) {
+            $decoded = $response -replace "<<NL>>", "`n"
+            # Strip ANSI escape sequences for readability
+            $clean = $decoded -replace '\x1b\[[0-9;]*[a-zA-Z]', '' -replace '\x1b\][^\x07]*\x07', '' -replace '\x1b[()][0-9A-Z]', ''
+            Write-Host $clean
+        }
+        else {
+            Write-Host "(empty)"
+        }
+    }
+    catch {
+        Write-Host "(server unreachable - showing log file instead)"
+    }
+
+    Write-Host ""
+    Write-Host "=== Log File: $script:LogFile ==="
+    if (Test-Path $script:LogFile) {
+        # Show last 100 lines, strip ANSI sequences
+        $lines = Get-Content $script:LogFile -Tail 100 -ErrorAction SilentlyContinue
+        if ($lines) {
+            $raw = $lines -join "`n"
+            $clean = $raw -replace '\x1b\[[0-9;]*[a-zA-Z]', '' -replace '\x1b\][^\x07]*\x07', '' -replace '\x1b[()][0-9A-Z]', ''
+            Write-Host $clean
+        }
+        else {
+            Write-Host "(empty)"
+        }
+    }
+    else {
+        Write-Host "(log file not found: $script:LogFile)"
+    }
+}
+
 # ============================================================
 # Main Dispatch
 # ============================================================
@@ -603,9 +702,10 @@ switch ($Command) {
     "wait"   { Invoke-Wait -WaitTimeout $Timeout }
     "kill"   { Invoke-Kill }
     "status" { Invoke-Status }
+    "log"    { Invoke-Log }
     "server" { Start-Server }
     default  {
-        Write-Host "Usage: claude-ctl.ps1 <start|send|enter|wait|kill|status> [args]"
+        Write-Host "Usage: claude-ctl.ps1 <start|send|enter|wait|kill|status|log> [args]"
         Write-Host ""
         Write-Host "Commands:"
         Write-Host "  start              Launch Claude in ConPTY background process"
@@ -614,5 +714,6 @@ switch ($Command) {
         Write-Host "  wait [-Timeout N]  Wait for .claude_done signal (default: 3600s)"
         Write-Host "  kill               Stop Claude and cleanup"
         Write-Host "  status             Check if Claude is running"
+        Write-Host "  log                Show Claude ConPTY output (live buffer + log file)"
     }
 }
