@@ -1,38 +1,58 @@
 # tmux-codex-claude-conversation
 
-Codex CLIをマネージャー、Claude CLIをワーカーとして連携させる自動開発フレームワーク。
+Codex CLIをマネージャー、Claude CLI（複数）をワーカーとして連携させる並列自動開発フレームワーク。
 
 ## 概要
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Codex (マネージャー)                                    │
-│  - タスク選択・指示出し                                  │
-│  - レビュー・進行管理                                    │
-│  - docs/todo.md 更新                                    │
-└────────────────┬────────────────────────────────────────┘
-                 │ ファイル経由で通信
-                 │ - work/task.md (指示)
-                 │ - work/review.md (修正依頼)
-                 │ - logs/.claude_done (完了シグナル)
-                 ▼
-┌─────────────────────────────────────────────────────────┐
-│  Claude (ワーカー)                                       │
-│  - Linux/macOS: tmux内で動作                             │
-│  - Windows: ConPTYバックグラウンドプロセス内で動作         │
-│  - 実装作業                                             │
-│  - commit & push                                        │
-│  - 完了シグナル送信                                      │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Codex (マネージャー / gpt-5.3-codex xHigh)                  │
+│  - タスク分析・ワーカー割当                                   │
+│  - git worktree管理                                          │
+│  - 並列監視・レビュー                                        │
+│  - マージ・docs/todo.md 更新                                 │
+└───────┬──────────┬──────────┬────────────────────────────────┘
+        │          │          │  ファイル経由で通信
+        │          │          │  - work/task-{i}.md (指示)
+        │          │          │  - work/review-{i}.md (修正依頼)
+        │          │          │  - logs/.claude_done_{i} (完了シグナル)
+        ▼          ▼          ▼
+┌────────────┐ ┌────────────┐ ┌────────────┐
+│ Claude #1  │ │ Claude #2  │ │ Claude #N  │
+│ worker-1   │ │ worker-2   │ │ worker-N   │
+│ worktree/1 │ │ worktree/2 │ │ worktree/N │
+│ branch:    │ │ branch:    │ │ branch:    │
+│ task/1-xxx │ │ task/2-yyy │ │ task/N-zzz │
+└────────────┘ └────────────┘ └────────────┘
 ```
+
+### git worktreeによる並列化
+
+複数のClaudeワーカーが同一リポジトリで別ブランチを同時に操作するため、**git worktree**で各ワーカーに独立した作業ディレクトリを割り当てます。
+
+```bash
+# ワーカーiの作業ディレクトリ作成
+git worktree add .worktrees/worker-{i} -b task/{i}-{slug} main
+
+# tmuxウィンドウはそのディレクトリで起動
+tmux new-window -t codex-dev -n claude-worker-{i} -c "$(pwd)/.worktrees/worker-{i}"
+
+# 完了後にworktree削除
+git worktree remove .worktrees/worker-{i} --force
+```
+
+- 各worktreeは独立したワーキングディレクトリ（checkoutの競合なし）
+- CLAUDE.mdはworktreeディレクトリにも自動で見える（gitが管理）
+- `work/`, `logs/` はプロジェクトルートにあるので、Claudeにはフルパスで参照させる
 
 ## 実行環境
 
-| | Mac / Linux | Windows |
+| | Mac / Linux（並列版） | Windows（レガシー逐次版） |
 |---|---|---|
-| Claude制御 | tmux + send-keys（直接実行） | ConPTY + 名前付きパイプ (`claude-ctl.ps1`) |
+| 動作モード | Codex 1 : Claude N（最大10並列） | Codex 1 : Claude 1（逐次） |
+| Claude制御 | tmux + send-keys + git worktree | ConPTY + 名前付きパイプ (`claude-ctl.ps1`) |
 | 起動スクリプト | `bash scripts/codex-main.sh` | `pwsh -File scripts/codex-main.ps1` |
-| シグナル / タスク通信 | `logs/.claude_done`, `work/task.md` (共通) | 同左 |
+| シグナル / タスク通信 | `logs/.claude_done_{i}`, `work/task-{i}.md` | `logs/.claude_done`, `work/task.md` |
 
 ## 前提条件
 
@@ -44,7 +64,7 @@ Codex CLIをマネージャー、Claude CLIをワーカーとして連携させ�
 ### Mac / Linux
 - tmux がインストール済み
 
-### Windows
+### Windows（レガシー逐次モード）
 - Windows 10 1809以降（ConPTY対応）
 - PowerShell 7+（pwsh）— `PWSH_PATH` 環境変数でパスを指定可能
 
@@ -81,25 +101,26 @@ cat ~/.claude.json
 
 > **注意**: `--dangerously-skip-permissions` の警告ダイアログは、手動で一度承認するまで毎回表示されます（[既知の仕様](https://github.com/anthropics/claude-code/issues/25503)）。
 
+#### リモート環境でのセットアップ
+
+SSH先やCI環境など、ブラウザが使えない環境では、ローカルで認証済みの設定ファイルを事前配置します:
+
+```bash
+# ローカルで認証を完了した後、以下のファイルをリモートにコピー
+scp ~/.claude.json remote:~/.claude.json
+scp -r ~/.claude/settings.json remote:~/.claude/settings.json
+```
+
+必要なファイル:
+- `~/.claude.json` — `"hasCompletedOnboarding": true` を含む
+- `~/.claude/settings.json` — `"skipDangerousModePermissionPrompt": true` を含む
+
 #### Codex CLI の確認
 
 ```bash
 # Codexが正常に動作するか確認
 codex --sandbox danger-full-access --ask-for-approval never "echo hello"
 ```
-
-#### Windows 11 Pro / 企業管理環境での注意
-
-管理されたWindows環境（ドメイン参加、Intune管理等）では、グループポリシーにより以下が制限される場合があります:
-
-| 制約 | 影響 | 確認方法 |
-|------|------|----------|
-| PowerShell実行ポリシー | スクリプト実行がブロック | `Get-ExecutionPolicy -List` |
-| AppLocker / WDAC | 未署名プロセスの起動がブロック | 管理者に確認 |
-| ネットワークポリシー | API通信がファイアウォールでブロック | `curl https://api.anthropic.com` |
-| Codex組織ポリシー | `requirements.toml` で `danger-full-access` が禁止 | Codex起動時のエラーメッセージを確認 |
-
-これらの制約はコード側では回避できません。環境の管理者にポリシー緩和を依頼するか、制約の無い環境で実行してください。
 
 ### 1. このリポジトリをテンプレートとして使用
 
@@ -170,6 +191,14 @@ work/task.md
 work/review.md
 work/progress.md
 logs/.claude_done
+
+# パラレルワーカー
+work/task-*.md
+work/review-*.md
+logs/.claude_done_*
+
+# git worktree作業ディレクトリ
+.worktrees/
 ```
 
 ## 推奨ワークフロー（タスク作成編）
@@ -189,14 +218,6 @@ Claude CLIを起動し、対話しながら実装プランを練る:
 - 要件の曖昧な部分を潰していく
 - 最終的に実装プランのドキュメントを出力させる
 
-```
-あなた: ユーザー認証機能を追加したい
-Claude: いくつか確認させてください。認証方式は？（JWT / セッション / OAuth）
-あなた: JWT
-Claude: トークンの有効期限は？リフレッシュトークンは必要？
-...
-```
-
 ### 2. Codexでプロジェクト全体レビュー
 
 ```bash
@@ -215,84 +236,101 @@ Codexに具体的なタスクリストを生成させる:
 
 - 「このプランを元に、docs/todo.md を作成して」
 - 優先度順、依存関係を考慮した順序
-- 対象ファイルパスを明記させる
+- **対象ファイルパスを明記させる**（並列実行時のファイル重複判定に必要）
 
 ### 4. 自動実行
 
 TODOが固まったら自動開発を開始:
 
-**Linux/macOS:**
 ```bash
-./scripts/codex-main.sh
-```
+# 並列ワーカー数を指定（オプション、デフォルト5）
+export MAX_CLAUDE_WORKERS=3
 
-**Windows:**
-```powershell
-pwsh -File scripts/codex-main.ps1
+./scripts/codex-main.sh
 ```
 
 ## 使い方
 
-### 起動
+### 起動（Mac / Linux）
 
-**Linux/macOS:**
 ```bash
+# デフォルト（最大5並列ワーカー）
 ./scripts/codex-main.sh
+
+# ワーカー数を指定
+MAX_CLAUDE_WORKERS=3 ./scripts/codex-main.sh
 ```
 
 これにより:
 1. tmuxセッション `codex-dev` が作成される
-2. Codexがエージェントモードで起動
-3. `AGENTS.md` の指示に従い自動でタスクを処理開始
+2. Codex (gpt-5.3-codex) がエージェントモードで起動
+3. `AGENTS.md` の指示に従い、タスクを分析
+4. 独立タスクごとにgit worktreeとClaudeワーカーを並列起動
+5. 全ワーカー完了後、レビュー → mainにマージ → 次のバッチへ
 
-**Windows:**
+### 起動（Windows — レガシー逐次モード）
+
 ```powershell
 pwsh -File scripts/codex-main.ps1
 ```
 
-これにより:
-1. Codexがエージェントモードで起動
-2. Claude CLIはConPTYバックグラウンドプロセスとして管理される
-3. `AGENTS.md` の指示に従い自動でタスクを処理開始
+Windows版は従来の1:1逐次実行モードで動作します。
 
 ### 停止
 
-`Ctrl+C` で停止。Claudeのワーカープロセスは自動でクリーンアップされます。
+`Ctrl+C` で停止。全Claudeワーカーとworktreeは自動でクリーンアップされます。
+
+### `MAX_CLAUDE_WORKERS` 環境変数
+
+| 値 | 説明 |
+|---|---|
+| 1 | 逐次実行（並列なし） |
+| 2〜5 | 推奨範囲 |
+| 6〜10 | 大量の独立タスクがある場合 |
+| デフォルト | 5 |
+
+Codexはタスクの対象ファイルを分析し、ファイル重複がないタスクのみを同時実行します。
+重複がある場合はバッチを分割して順次処理します。
 
 ## ファイル構成
 
 ```
 .
-├── AGENTS.md              # Codex（マネージャー）への指示書
+├── AGENTS.md              # Codex（マネージャー）への指示書（並列版）
 ├── CLAUDE.md              # Claude（ワーカー）への指示書
 ├── README.md              # このファイル
 ├── scripts/
-│   ├── codex-main.sh      # 起動スクリプト（Mac/Linux）
-│   ├── codex-main.ps1     # 起動スクリプト（Windows）
+│   ├── codex-main.sh      # 起動スクリプト（Mac/Linux, 並列版）
+│   ├── codex-main.ps1     # 起動スクリプト（Windows, レガシー逐次版）
 │   ├── claude-ctl.ps1     # Claude制御コア（Windows, ConPTY + 名前付きパイプ）
-│   ├── worker-setup.ps1   # Claude起動ラッパー
-│   ├── worker-send.ps1    # テキスト送信ラッパー
-│   ├── worker-standby.ps1 # 完了待機ラッパー
-│   ├── worker-done.ps1    # 終了ラッパー
-│   ├── worker-check.ps1   # 状態確認ラッパー
-│   ├── worker-reset.ps1   # シグナルクリアラッパー
-│   └── worker-log.ps1     # ログ表示ラッパー
+│   ├── worker-setup.ps1   # Claude起動ラッパー（Windows）
+│   ├── worker-send.ps1    # テキスト送信ラッパー（Windows）
+│   ├── worker-standby.ps1 # 完了待機ラッパー（Windows）
+│   ├── worker-done.ps1    # 終了ラッパー（Windows）
+│   ├── worker-check.ps1   # 状態確認ラッパー（Windows）
+│   ├── worker-reset.ps1   # シグナルクリアラッパー（Windows）
+│   └── worker-log.ps1     # ログ表示ラッパー（Windows）
 ├── docs/
 │   └── todo.md            # タスクリスト（要作成）
 ├── work/                  # 一時ファイル置き場（gitignore済み）
 │   └── .gitkeep
-└── logs/                  # シグナル・ログ用（gitignore済み）
-    └── .gitkeep
+├── logs/                  # シグナル・ログ用（gitignore済み）
+│   └── .gitkeep
+└── .worktrees/            # git worktree作業ディレクトリ（gitignore済み、自動生成）
 ```
 
 ## カスタマイズ
 
 ### タスク指示のフォーマット
 
-Codexが `work/task.md` に書く指示のフォーマット:
+Codexが `work/task-{i}.md` に書く指示のフォーマット:
 
 ```markdown
 # タスク: [タスク名]
+# ワーカーID: {i}
+# ブランチ: task/{i}-{slug} (checkout済み)
+# シグナル: {PROJECT_ROOT}/logs/.claude_done_{i}
+# レビューファイル: {PROJECT_ROOT}/work/review-{i}.md
 
 ## 概要
 [何をするか]
@@ -311,10 +349,10 @@ Codexが `work/task.md` に書く指示のフォーマット:
 
 ### レビューのフォーマット
 
-修正が必要な場合、Codexが `work/review.md` に書く内容:
+修正が必要な場合、Codexが `work/review-{i}.md` に書く内容:
 
 ```markdown
-# レビュー指摘
+# レビュー指摘（ワーカー{i}）
 
 ## 問題点
 - [問題1の説明]
@@ -330,34 +368,36 @@ Codexが `work/task.md` に書く指示のフォーマット:
 
 30秒ごとにエンターキーが送信されますが、それでも応答がない場合:
 
-**Linux/macOS:**
 ```bash
 # 手動でClaudeウィンドウを確認
 tmux attach -t codex-dev
 # ウィンドウ切り替え: Ctrl+B, n
+# ウィンドウ一覧: Ctrl+B, w
 ```
 
-**Windows:**
-```powershell
-# Claude の状態を確認
-pwsh -File scripts/claude-ctl.ps1 status
+### worktreeが残る
 
-# ConPTYの出力ログを確認（何が表示されているか見える）
-pwsh -File scripts/claude-ctl.ps1 log
+異常終了時にworktreeが残った場合:
 
-# 手動でEnterを送信
-pwsh -File scripts/claude-ctl.ps1 enter
+```bash
+# 残っているworktreeを確認
+git worktree list
+
+# 手動削除
+git worktree remove .worktrees/worker-1 --force
+# または全削除
+rm -rf .worktrees && git worktree prune
 ```
-
-`log` コマンドはConPTYのライブバッファ（最新8KB）と `logs/conpty.log` の末尾を表示します。Claudeが初期化プロンプトで止まっているのか、プロセス自体が死んでいるのかを確認できます。
 
 ### タイムアウトが発生する
 
-デフォルトのタイムアウトは60分。
-
-- Linux/macOS: `AGENTS.md` の `timeout 3600` を調整
-- Windows: `AGENTS.md` の `-Timeout 3600` を調整
+デフォルトのタイムアウトは60分。`AGENTS.md` の `TIMEOUT=3600` を調整。
 
 ### push が失敗する
 
-Claudeは自動で `git pull --rebase && git push` を試みます。それでも失敗する場合は手動で解決が必要です。
+Claudeは自動で `git pull --rebase && git push -u origin HEAD` を試みます。それでも失敗する場合は手動で解決が必要です。
+
+### マージコンフリクト
+
+並列ワーカーのブランチがコンフリクトした場合、Codexは自動で `merge --abort` してスキップします。
+スキップされたタスクは `docs/todo.md` に記録されるので、次のバッチで再実行されます。

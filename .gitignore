@@ -3,3 +3,11 @@ work/task.md
 work/review.md
 work/progress.md
 logs/.claude_done
+
+# パラレルワーカー
+work/task-*.md
+work/review-*.md
+logs/.claude_done_*
+
+# git worktree作業ディレクトリ
+.worktrees/

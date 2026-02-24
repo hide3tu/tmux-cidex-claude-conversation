@@ -1,7 +1,7 @@
-# 自律開発エージェント指示書
+# 自律開発エージェント指示書（並列ワーカー版）
 
 あなたは自律型開発エージェントです。**すべての出力・コミットメッセージ・レビューコメントは日本語で書くこと。**
-`docs/todo.md`のタスクを順次消化してください。
+`docs/todo.md`のタスクを並列Claudeワーカーで消化してください。
 
 **起動したら即座に「タスク実行フロー」のステップ1から開始すること。ユーザー入力を待たない。**
 
@@ -13,92 +13,91 @@
 
 ## システム構成
 
-- **あなた (Codex)**: 指示出し、レビュー、進行管理、todo.md更新
-- **作業員 (Claude)**: バックグラウンドプロセス内で動作、実装・commit・push担当
-- **通信**: ファイル経由（`work/task.md`, `work/review.md`）+ シグナル（`logs/.claude_done`）
+- **あなた (Codex)**: タスク分析、ワーカー割当、指示出し、レビュー、マージ、進行管理
+- **作業員 (Claude ×N)**: 各worktreeで独立動作、実装・commit・push担当
+- **通信**: ファイル経由（`work/task-{i}.md`, `work/review-{i}.md`）+ シグナル（`logs/.claude_done_{i}`）
 - **Claudeの振る舞い**: `CLAUDE.md`に定義済み（commit・push・シグナル送信を含む）
+- **並列上限**: `MAX_CLAUDE_WORKERS` 環境変数（デフォルト5、最大10）
 
-## 環境別Claude制御
+## ワーカー数判断基準
 
-### Mac/Linux の場合
-
-tmuxセッション `codex-dev` 内の `claude-worker` ウィンドウでClaudeを操作する。
-`codex-main.sh` 経由で起動されること。
-
-```bash
-# Claude起動
-tmux new-window -t codex-dev -n claude-worker -c $(pwd)
-tmux send-keys -t codex-dev:claude-worker "claude --dangerously-skip-permissions" C-m
-sleep 5
-tmux send-keys -t codex-dev:claude-worker C-m
-
-# テキスト送信
-tmux send-keys -t codex-dev:claude-worker "テキスト" C-m
-sleep 1
-tmux send-keys -t codex-dev:claude-worker C-m
-
-# 完了待機
-timeout 3600 bash -c '
-while [ ! -f logs/.claude_done ]; do
-  tmux send-keys -t codex-dev:claude-worker C-m 2>/dev/null
-  sleep 30
-done
-'
-
-# 終了
-tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true
+```
+MAX_CLAUDE_WORKERS=${MAX_CLAUDE_WORKERS:-5}（環境変数、デフォルト5）
 ```
 
-### Windows の場合
-
-`scripts/worker-*.ps1` ラッパースクリプトでClaudeを操作する。
-`codex-main.ps1` 経由で起動されること。
-
-**重要**: `claude-ctl.ps1` を直接呼ばず、必ず以下のラッパーを使うこと。
-
-```powershell
-# Claude起動
-pwsh -File scripts/worker-setup.ps1
-
-# テキスト送信
-pwsh -File scripts/worker-send.ps1 "テキスト"
-
-# 完了待機
-pwsh -File scripts/worker-standby.ps1 -Timeout 3600
-
-# 終了
-pwsh -File scripts/worker-done.ps1
-
-# 状態確認
-pwsh -File scripts/worker-check.ps1
-
-# シグナルクリア
-pwsh -File scripts/worker-reset.ps1
-
-# ログ確認
-pwsh -File scripts/worker-log.ps1
-```
+| 状況 | ワーカー数 |
+|------|-----------|
+| タスク1つ or 全タスクが同一ファイル群を編集 | 1 |
+| ファイル重複なしの独立タスク複数 | 重複なしタスク数（上限まで） |
+| 一部重複あり | 重複なしグループにバッチ分割 |
+| 迷ったら少なめに見積もる | |
 
 ## タスク実行フロー
 
-### 1. タスク選択
-- `docs/todo.md`を読み、`- [ ]`（未完了）のタスクを1つ選ぶ
-- 上から順に処理する
+### ステップ1: タスク分析
 
-### 2. 環境リセット
-```bash
-rm -f logs/.claude_done
+1. `docs/todo.md`を読み、`- [ ]`（未完了）のタスクを把握する
+2. 各タスクの対象ファイルを分析し、ファイル重複を確認する
+3. 同時実行可能なタスク数N（1〜MAX_CLAUDE_WORKERS）を決定する
+4. ディスパッチログを出力する:
+
 ```
-Mac: `tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true`
-Win: `pwsh -File scripts/worker-reset.ps1` → `pwsh -File scripts/worker-done.ps1`
+[DISPATCH] workers=N | task-1(slug1)→worker-1, task-2(slug2)→worker-2, ...
+```
 
-### 3. Claude起動
-上記「環境別Claude制御」のClaude起動手順を実行
+### ステップ2: 環境リセット
 
-### 4. タスク指示書作成
-`work/task.md`に以下の形式で指示を書く:
+既存のワーカー・worktreeを全削除してクリーンな状態にする:
+
+```bash
+# 既存ワーカーウィンドウを全削除
+for w in $(tmux list-windows -t codex-dev -F '#{window_name}' 2>/dev/null | grep '^claude-worker-'); do
+  tmux kill-window -t "codex-dev:$w" 2>/dev/null || true
+done
+
+# シグナル全削除
+rm -f logs/.claude_done_*
+
+# 既存worktree全削除
+if [ -d .worktrees ]; then
+  for wt in .worktrees/worker-*; do
+    git worktree remove "$wt" --force 2>/dev/null || true
+  done
+fi
+
+# 一時ファイル削除
+rm -f work/task-*.md work/review-*.md
+```
+
+### ステップ3: ブランチ + worktree準備
+
+```bash
+git checkout main
+git pull origin main
+
+# 各ワーカーのworktreeとブランチを作成
+for i in 1..N; do
+  git worktree add .worktrees/worker-${i} -b task/${i}-${slug} main
+done
+```
+
+- `{slug}` はタスク名を短いスラグに変換したもの（英数字とハイフンのみ）
+- 既にブランチが存在する場合は `git worktree add .worktrees/worker-${i} task/${i}-${slug}` で既存ブランチを使用
+
+### ステップ4: ワーカー起動ループ (i = 1..N)
+
+各ワーカーについて以下を実行:
+
+#### a. タスクファイル作成
+
+`work/task-{i}.md` をプロジェクトルートに作成:
+
 ```markdown
 # タスク: [タスク名]
+# ワーカーID: {i}
+# ブランチ: task/{i}-{slug} (checkout済み)
+# シグナル: {PROJECT_ROOT}/logs/.claude_done_{i}
+# レビューファイル: {PROJECT_ROOT}/work/review-{i}.md
 
 ## 概要
 [何をするか]
@@ -114,59 +113,180 @@ Win: `pwsh -File scripts/worker-reset.ps1` → `pwsh -File scripts/worker-done.p
 ## 完了条件
 - [完了の判断基準]
 ```
-※ commit・push・シグナル送信はCLAUDE.mdに定義済みなので指示不要
 
-### 5. 指示送信
-上記「環境別Claude制御」のテキスト送信で:
-`"work/task.mdを読んで実装してください"`
+**注意**: `work/task-{i}.md`はプロジェクトルートに置く。worktreeディレクトリではない。
+シグナルファイルとレビューファイルはプロジェクトルートの絶対パスで記載する。
 
-### 6. ブロッキング待機
-**重要**: このコマンドが終了するまで、追加のAPIリクエストは行わない
-上記「環境別Claude制御」の完了待機を実行
+#### b. tmuxウィンドウ作成
 
-### 7. レビュー
-Claudeがcommit・pushした変更をレビューする:
 ```bash
-git fetch origin
-git log origin/main -1 --oneline
-git diff HEAD~1
+tmux new-window -t codex-dev -n claude-worker-${i} -c "$(pwd)/.worktrees/worker-${i}"
 ```
-- レビュー有無に関係なく、この時点で `logs/.claude_done` を削除する
-- **問題なし（LGTM）**: → ステップ8へ
-- **問題あり**: → `work/review.md`に指摘を書き、`logs/.claude_done`を削除してから修正指示を送る（最大3回）
 
-#### 修正指示（問題あり時）
+#### c. Claude起動
+
 ```bash
-rm -f logs/.claude_done
+tmux send-keys -t codex-dev:claude-worker-${i} "claude --dangerously-skip-permissions --model claude-sonnet-4-6" C-m
+sleep 5
+tmux send-keys -t codex-dev:claude-worker-${i} C-m
 ```
-テキスト送信で: `"work/review.mdを読んで修正してください"`
-→ ステップ6に戻る
 
-### 8. 完了処理（Codexが行う）
+#### d. 指示送信
+
 ```bash
-# シグナル・一時ファイル削除（コンテキスト軽量化のため必須）
-rm -f logs/.claude_done
-rm -f work/task.md work/review.md work/progress.md
+tmux send-keys -t codex-dev:claude-worker-${i} "${PROJECT_ROOT}/work/task-${i}.mdを読んで実装してください。プロジェクトルートは${PROJECT_ROOT}です。シグナルは${PROJECT_ROOT}/logs/.claude_done_${i}に作成してください。" C-m
+sleep 1
+tmux send-keys -t codex-dev:claude-worker-${i} C-m
+```
 
-# todo.mdを更新（`- [ ]` を `- [x]` に変更）
-# todo.md更新をcommit & push
+#### e. 次のワーカーまで待機
+
+```bash
+sleep 5  # 各ワーカー間に5秒wait
+```
+
+### ステップ5: 並列監視ループ
+
+30秒ごとに全ワーカーを監視:
+
+```bash
+TIMEOUT=3600  # 60分
+ELAPSED=0
+COMPLETED=()  # 完了済みワーカーのリスト
+
+while [ ${#COMPLETED[@]} -lt $N ] && [ $ELAPSED -lt $TIMEOUT ]; do
+  sleep 30
+  ELAPSED=$((ELAPSED + 30))
+
+  for i in 1..N; do
+    # 既に完了済みならスキップ
+    if [[ " ${COMPLETED[@]} " =~ " $i " ]]; then
+      continue
+    fi
+
+    # キープアライブ（Enterキー送信）
+    tmux send-keys -t codex-dev:claude-worker-${i} C-m 2>/dev/null || true
+
+    # シグナル確認
+    if [ -f logs/.claude_done_${i} ]; then
+      # → ステップ6（レビュー）へ
+    fi
+  done
+done
+```
+
+タイムアウト時は未完了ワーカーを強制終了し、todo.mdに「タイムアウト」と記録する。
+
+### ステップ6: レビュー（ワーカーi完了時）
+
+ワーカーiの完了を検知したら:
+
+```bash
+# 差分確認
+git diff main...task/${i}-${slug}
+```
+
+- **問題なし（LGTM）**:
+  - `tmux kill-window -t codex-dev:claude-worker-${i} 2>/dev/null || true`
+  - マージリストに追加
+  - `rm -f logs/.claude_done_${i}`
+
+- **問題あり**（最大3回まで修正指示）:
+  1. `work/review-{i}.md` に指摘を書く
+  2. `rm -f logs/.claude_done_${i}`
+  3. 修正指示を送信:
+     ```bash
+     tmux send-keys -t codex-dev:claude-worker-${i} "${PROJECT_ROOT}/work/review-${i}.mdを読んで修正してください" C-m
+     sleep 1
+     tmux send-keys -t codex-dev:claude-worker-${i} C-m
+     ```
+  4. ステップ5の監視ループに戻る
+
+### ステップ7: マージ処理
+
+全ワーカー完了（またはタイムアウト）後、LGTM済みブランチをmainにマージ:
+
+```bash
+git checkout main
+git pull origin main
+
+# 差分が小さいブランチから順にマージ（コンフリクト最小化）
+for branch in ${MERGE_LIST_SORTED_BY_DIFF_SIZE}; do
+  git merge ${branch} --no-edit
+  if [ $? -ne 0 ]; then
+    # コンフリクト時: merge中止、todo.mdにスキップ記録
+    git merge --abort
+    echo "[CONFLICT] ${branch} のマージをスキップ"
+    # todo.mdに「コンフリクトのためスキップ」と記録
+  fi
+done
+
+git push origin main
+```
+
+### ステップ8: 完了処理
+
+```bash
+# 全worktree削除
+for i in 1..N; do
+  git worktree remove .worktrees/worker-${i} --force 2>/dev/null || true
+done
+
+# 全ワーカーウィンドウ削除（残っていれば）
+for w in $(tmux list-windows -t codex-dev -F '#{window_name}' 2>/dev/null | grep '^claude-worker-'); do
+  tmux kill-window -t "codex-dev:$w" 2>/dev/null || true
+done
+
+# 一時ファイル削除
+rm -f work/task-*.md work/review-*.md logs/.claude_done_*
+
+# todo.md更新（完了タスクを [x] に変更）
+# commit & push
 git add docs/todo.md
-git commit -m "docs: mark [タスク名] as completed"
-git push
-```
-Claudeプロセス破棄:
-Mac: `tmux kill-window -t codex-dev:claude-worker 2>/dev/null || true`
-Win: `pwsh -File scripts/worker-done.ps1`
+git commit -m "docs: バッチ完了 — [完了タスクのサマリー]"
+git push origin main
 
-### 9. 次のタスクへ
-ステップ1に戻る
+# マージ済みブランチ削除
+for i in 1..N; do
+  git branch -d task/${i}-${slug} 2>/dev/null || true
+  git push origin --delete task/${i}-${slug} 2>/dev/null || true
+done
+```
+
+### ステップ9: 次のバッチへ
+
+`docs/todo.md`に未完了タスクが残っていれば、ステップ1に戻る。
+
+## task-{i}.md フォーマット
+
+```markdown
+# タスク: [タスク名]
+# ワーカーID: {i}
+# ブランチ: task/{i}-{slug} (checkout済み)
+# シグナル: {PROJECT_ROOT}/logs/.claude_done_{i}
+# レビューファイル: {PROJECT_ROOT}/work/review-{i}.md
+
+## 概要
+[何をするか — 具体的な実装内容]
+
+## 対象ファイル
+- path/to/file1
+- path/to/file2
+
+## 要件
+- [具体的な要件1]
+- [具体的な要件2]
+
+## 完了条件
+- [完了の判断基準]
+```
 
 ## 役割分担まとめ
 
 | 担当 | 作業 |
 |------|------|
-| Claude | 実装、commit、push、シグナル送信 |
-| Codex | タスク指示、レビュー、todo.md更新、進行管理 |
+| Claude ×N | 各worktreeで実装、commit、push、シグナル送信 |
+| Codex | タスク分析、ワーカー割当、worktree管理、レビュー、マージ、todo.md更新、進行管理 |
 
 ## 禁止事項
 
@@ -175,10 +295,12 @@ Win: `pwsh -File scripts/worker-done.ps1`
 - 過去のコミット履歴を大量に読まない
 - Claudeに余計なファイル（ログ、履歴）を読ませない
 - **Codexは実装コードをcommitしない**（それはClaudeの仕事）
+- **mainブランチに直接実装コードをpushしない**（マージのみ）
 
 ## タイムアウト時の処理
 
-ステップ6でタイムアウトが発生した場合:
-1. Claudeを終了（Mac: `tmux kill-window ...` / Win: `pwsh -File scripts/worker-done.ps1`）
-2. そのタスクをスキップし、次のタスクへ
-3. todo.mdに「タイムアウト」とメモ
+ステップ5でタイムアウトが発生した場合:
+1. 未完了ワーカーを全終了（`tmux kill-window`）
+2. 未完了ワーカーのworktreeを削除
+3. 完了済みワーカーのレビュー・マージは通常通り実行
+4. 未完了タスクはtodo.mdに「タイムアウト」とメモして次のバッチへ
