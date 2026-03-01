@@ -45,28 +45,13 @@ git worktree remove .worktrees/worker-{i} --force
 - CLAUDE.mdはworktreeディレクトリにも自動で見える（gitが管理）
 - `work/`, `logs/` はプロジェクトルートにあるので、Claudeにはフルパスで参照させる
 
-## 実行環境
-
-| | Mac / Linux（並列版） | Windows（レガシー逐次版） |
-|---|---|---|
-| 動作モード | Codex 1 : Claude N（最大10並列） | Codex 1 : Claude 1（逐次） |
-| Claude制御 | tmux + send-keys + git worktree | ConPTY + 名前付きパイプ (`claude-ctl.ps1`) |
-| 起動スクリプト | `bash scripts/codex-main.sh` | `pwsh -File scripts/codex-main.ps1` |
-| シグナル / タスク通信 | `logs/.claude_done_{i}`, `work/task-{i}.md` | `logs/.claude_done`, `work/task.md` |
-
 ## 前提条件
 
-### 共通
 - [Codex CLI](https://github.com/openai/codex) がインストール済み
 - [Claude CLI](https://github.com/anthropics/claude-code) がインストール済み
 - Git リポジトリとして初期化済み
-
-### Mac / Linux
 - tmux がインストール済み
-
-### Windows（レガシー逐次モード）
-- Windows 10 1809以降（ConPTY対応）
-- PowerShell 7+（pwsh）— `PWSH_PATH` 環境変数でパスを指定可能
+- Mac / Linux 環境
 
 ## セットアップ
 
@@ -251,8 +236,6 @@ export MAX_CLAUDE_WORKERS=3
 
 ## 使い方
 
-### 起動（Mac / Linux）
-
 ```bash
 # デフォルト（最大5並列ワーカー）
 ./scripts/codex-main.sh
@@ -267,14 +250,6 @@ MAX_CLAUDE_WORKERS=3 ./scripts/codex-main.sh
 3. `AGENTS.md` の指示に従い、タスクを分析
 4. 独立タスクごとにgit worktreeとClaudeワーカーを並列起動
 5. 全ワーカー完了後、レビュー → mainにマージ → 次のバッチへ
-
-### 起動（Windows — レガシー逐次モード）
-
-```powershell
-pwsh -File scripts/codex-main.ps1
-```
-
-Windows版は従来の1:1逐次実行モードで動作します。
 
 ### 停止
 
@@ -300,16 +275,7 @@ Codexはタスクの対象ファイルを分析し、ファイル重複がない
 ├── CLAUDE.md              # Claude（ワーカー）への指示書
 ├── README.md              # このファイル
 ├── scripts/
-│   ├── codex-main.sh      # 起動スクリプト（Mac/Linux, 並列版）
-│   ├── codex-main.ps1     # 起動スクリプト（Windows, レガシー逐次版）
-│   ├── claude-ctl.ps1     # Claude制御コア（Windows, ConPTY + 名前付きパイプ）
-│   ├── worker-setup.ps1   # Claude起動ラッパー（Windows）
-│   ├── worker-send.ps1    # テキスト送信ラッパー（Windows）
-│   ├── worker-standby.ps1 # 完了待機ラッパー（Windows）
-│   ├── worker-done.ps1    # 終了ラッパー（Windows）
-│   ├── worker-check.ps1   # 状態確認ラッパー（Windows）
-│   ├── worker-reset.ps1   # シグナルクリアラッパー（Windows）
-│   └── worker-log.ps1     # ログ表示ラッパー（Windows）
+│   └── codex-main.sh      # 起動スクリプト（並列版）
 ├── docs/
 │   └── todo.md            # タスクリスト（要作成）
 ├── work/                  # 一時ファイル置き場（gitignore済み）
